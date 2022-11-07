@@ -6,13 +6,14 @@ const { url } = require('inspector');
 const { AzureKeyCredential, DocumentAnalysisClient } = require("@azure/ai-form-recognizer");
 const { queryRecord, insertRecord} = require('./cosmos-db-helper');
 
-// sample document
-const formUrl = "https://github.com/MicrosoftLearning/AI-900-AIFundamentals/raw/main/data/vision/receipt.jpg";
 
 const formrecog_endpoint=process.env.FORM_RECOGNIZER_ENDPOINT;
 const formrecog_key=process.env.FORM_RECOGNIZER_KEY;
 
-async function recognizeReceipt() {
+async function recognizeReceipt(userId,receiptNo,targetFile) {
+    // sample document
+    const formUrl = process.env.IMAGE_BASE_URL + targetFile;
+
     const client = new DocumentAnalysisClient(formrecog_endpoint, new AzureKeyCredential(formrecog_key));
 
     const poller = await client.beginAnalyzeDocumentFromUrl("prebuilt-receipt", formUrl);
@@ -23,10 +24,10 @@ async function recognizeReceipt() {
             documents: [result],
         } = await poller.pollUntilDone();
 
-        // insertRecord("vish","newid",result.fields);
-
         // Use of PrebuiltModels.Receipt above (rather than the raw model ID), as it adds strong typing of the model's output
         if (result) {
+
+            insertRecord(userId,receiptNo,result.fields);
 
             const { MerchantName, Items, Subtotal, TotalTax, Total } = result.fields;
             console.log("=== Receipt Information ===");
@@ -44,6 +45,7 @@ async function recognizeReceipt() {
             console.log("Subtotal:", Subtotal && Subtotal.value);
             console.log("Tax:", TotalTax && TotalTax.value);
             console.log("Total:", Total && Total.value);
+            
         } else {
             throw new Error("Expected at least one receipt in the result.");
         }
@@ -92,16 +94,6 @@ http.createServer(function (req, res) {
 
             try {
 
-                // const items = queryRecord("myid","vish");
-                // if (items && Array(items).length>0){
-                //     console.log("Warning: This receipt id already exists (id:"+Array(items).length+")");
-                //     res.write('File Upload Failed!');
-                //     res.end();
-                // } else {
-                //     console.log("Creating this receipt as this id does not exist (id:"+Array(items).length+")");
-                // insertRecord("myids","vish",result.fields);
-                // }
-
                 const checkitems = await queryRecord(userId,receiptNo);
                 if (checkitems && checkitems.length>0){
                     console.log("Warning: This receipt id already exists (receipt:"+receiptNo+") for (user:"+userId+")");
@@ -110,8 +102,10 @@ http.createServer(function (req, res) {
                     res.end();
                     return;
                 } else {
-                    let newpath = 'C:/temp/cc-file-uploads/';
-                    newpath += file.fileupload.originalFilename;
+
+                    const fileext = file.fileupload.originalFilename.split('.').pop();
+                    const targetFilename = userId + '-' + receiptNo + '.' + fileext;
+                    let newpath = process.env.FILE_UPLOAD_FOLDER + targetFilename;
     
                     //Copy the uploaded file to a custom folder
                     if (fs.existsSync(filepth)) {
@@ -120,6 +114,12 @@ http.createServer(function (req, res) {
                             res.write('File Upload Success! ('+newpath+')');
                             res.end();
                             return;
+                        });
+
+                        //recognize receipt
+                        recognizeReceipt(userId,receiptNo,targetFilename).catch((error) => {
+                            console.error("An error occurred:", error);
+                            process.exit(1);
                         });
                     } else {
                         res.write('File Upload Failed!');
@@ -135,7 +135,7 @@ http.createServer(function (req, res) {
     }
     //Process the file upload in Node
     else if (reqUrl === 'check-status') {
-        form.parse(req, async function (error, fields, file) {
+        form.parse(req, async function (error, fields) {
             let filepth = '';
 
             const userId=fields["user-id"];
@@ -144,15 +144,15 @@ http.createServer(function (req, res) {
             console.log("receiptNo: "+receiptNo);
 
             //Parameters validation
-            if (userId.trim().length===0||receiptNo.trim().length===0||!file) {
-                    res.write('File Upload Failed due to invalid parameters!');
+            if (userId.trim().length===0||receiptNo.trim().length===0) {
+                    res.write('Check Status Failed due to invalid parameters!');
                     res.end();
                     return;
             }
 
             //Allow only Valid User Ids - vish or bob
             if((userId!="vish" && userId!="bob")) {
-                res.write('File Upload Failed due to invalid userid ('+userId+')');
+                res.write('Check Status Failed due to invalid userid ('+userId+')');
                 res.end();
                 return;
             }
@@ -164,17 +164,21 @@ http.createServer(function (req, res) {
                 res.write('Check Status Cancelled as this receipt id ('+receiptNo+') does not exist!');
                 res.end();
                 return;
+            }else {
+                // console.log(queriedItems[0]);
+                const trxDetails = 'MerchantName    : '+queriedItems[0]["receiptObj"]["MerchantName"]["value"] + '\n' +
+                'Items 1         : '+queriedItems[0]["receiptObj"]["Items"]["values"][0]["content"] + '\n' +
+                'Items 2         : '+queriedItems[0]["receiptObj"]["Items"]["values"][1]["content"] + '\n' +
+                'Subtotal        : '+queriedItems[0]["receiptObj"]["Subtotal"]["value"] + '\n' +
+                'TotalTax        : '+queriedItems[0]["receiptObj"]["TotalTax"]["value"] + '\n' +
+                'Total           : '+queriedItems[0]["receiptObj"]["Total"]["value"] + '\n' +
+                'TransactionDate : '+queriedItems[0]["receiptObj"]["TransactionDate"]["value"] + '\n' +
+                'TransactionTime : '+queriedItems[0]["receiptObj"]["TransactionTime"]["value"];
+                console.log(trxDetails);
+                res.write("Check Status\n\n" +trxDetails);
+                res.end();
             }
-
-            recognizeReceipt().catch((error) => {
-                console.error("An error occurred:", error);
-                process.exit(1);
-            });
-            
-
-            res.write('Checking status!');
-            res.end();
         });
     }
 
-}).listen(80);
+}).listen(8080);
